@@ -537,6 +537,27 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<State> {
             }
         }
 
+        // CVE-2019-20445: RFC 7230 §3.3.2/§3.3.3 says an HTTP/1.1 recipient
+        // MUST reject a message that carries multiple Content-Length headers
+        // or a Content-Length together with Transfer-Encoding: chunked.
+        // Letting either through is a classic request-smuggling vector when
+        // an upstream proxy and netty disagree on which framing to honor.
+        // Mirrors upstream 4.x commit 8494b046ec7e4f28dbd44bc699cc4c4c92251729.
+        if (message.getProtocolVersion() != null
+                && message.getProtocolVersion().equals(HttpVersion.HTTP_1_1)) {
+            List<String> contentLengthValues =
+                    message.headers().getAll(HttpHeaders.Names.CONTENT_LENGTH);
+            if (contentLengthValues.size() > 1) {
+                throw new IllegalArgumentException("Multiple Content-Length headers found");
+            }
+            if (!contentLengthValues.isEmpty()
+                    && HttpCodecUtil.isTransferEncodingChunked(message)) {
+                throw new IllegalArgumentException(
+                        "Both 'Content-Length: " + contentLengthValues.get(0)
+                                + "' and 'Transfer-Encoding: chunked' found");
+            }
+        }
+
         State nextState;
 
         if (isContentAlwaysEmpty(message)) {
@@ -685,19 +706,66 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<State> {
         int cStart;
         int cEnd;
 
-        aStart = findNonWhitespace(sb, 0);
-        aEnd = findWhitespace(sb, aStart);
+        // CVE-2020-7238: tighten initial-line parsing so token separators are
+        // restricted to RFC 7230 §3.5 "SP lenient" whitespace (SP/HTAB/VT/FF/CR).
+        // The old findNonWhitespace/findWhitespace pair relied on
+        // Character.isWhitespace, which silently treated bytes like 0x1c-0x1f
+        // and other Unicode whitespace as separators — letting an attacker
+        // sneak smuggling payloads through the method/uri/version tokens.
+        // Mirrors upstream 4.x commit 9ae782d632ff18f7c9e645c58458b3180d257ff3.
+        aStart = findNonSPLenient(sb, 0);
+        aEnd = findSPLenient(sb, aStart);
 
-        bStart = findNonWhitespace(sb, aEnd);
-        bEnd = findWhitespace(sb, bStart);
+        bStart = findNonSPLenient(sb, aEnd);
+        bEnd = findSPLenient(sb, bStart);
 
-        cStart = findNonWhitespace(sb, bEnd);
+        cStart = findNonSPLenient(sb, bEnd);
         cEnd = findEndOfString(sb);
 
         return new String[] {
                 sb.substring(aStart, aEnd),
                 sb.substring(bStart, bEnd),
                 cStart < cEnd? sb.substring(cStart, cEnd) : "" };
+    }
+
+    /**
+     * Advance past RFC 7230 §3.5 "SP lenient" whitespace
+     * (SP, HTAB, VT, FF, CR). Reject any other Java whitespace as an invalid
+     * token separator.
+     */
+    private static int findNonSPLenient(String sb, int offset) {
+        for (int result = offset; result < sb.length(); ++result) {
+            char c = sb.charAt(result);
+            if (isSPLenient(c)) {
+                continue;
+            }
+            if (Character.isWhitespace(c)) {
+                throw new IllegalArgumentException(
+                        "Invalid separator (0x" + Integer.toHexString(c) + ")");
+            }
+            return result;
+        }
+        return sb.length();
+    }
+
+    /**
+     * Find the next RFC 7230 §3.5 "SP lenient" whitespace byte
+     * (SP, HTAB, VT, FF, CR). Any other whitespace is treated as a token
+     * character — non-OWS whitespace inside a token is caught by
+     * {@link #findNonSPLenient(String, int)} on the next pass.
+     */
+    private static int findSPLenient(String sb, int offset) {
+        for (int result = offset; result < sb.length(); ++result) {
+            if (isSPLenient(sb.charAt(result))) {
+                return result;
+            }
+        }
+        return sb.length();
+    }
+
+    private static boolean isSPLenient(char c) {
+        // RFC 7230 §3.5: relaxed whitespace allowed between request-line tokens.
+        return c == ' ' || c == 0x09 || c == 0x0B || c == 0x0C || c == 0x0D;
     }
 
     private static String[] splitHeader(String sb) {
