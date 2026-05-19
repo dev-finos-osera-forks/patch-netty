@@ -33,11 +33,12 @@ final class HttpCodecUtil {
 
             // Check prohibited characters.
             switch (c) {
+            case 0x00: case 0x1c: case 0x1d: case 0x1e: case 0x1f:
             case '\t': case '\n': case 0x0b: case '\f': case '\r':
             case ' ':  case ',':  case ':':  case ';':  case '=':
                 throw new IllegalArgumentException(
                         "name contains one of the following prohibited characters: " +
-                        "=,;: \\t\\r\\n\\v\\f: " + name);
+                        "=,;: \\t\\r\\n\\v\\f \\0 0x1c 0x1d 0x1e 0x1f: " + name);
             }
         }
     }

@@ -708,7 +708,12 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<State> {
         int valueStart;
         int valueEnd;
 
-        nameStart = findNonWhitespace(sb, 0);
+        // CVE-2021-43797: strict OWS at the start of the line rejects any
+        // non-SP/HTAB leading whitespace — including the 0x1c-0x1f control
+        // chars that Character.isWhitespace silently strips, which would
+        // otherwise let an attacker smuggle a "Transfer-Encoding" header
+        // past an upstream proxy.
+        nameStart = findNonWhitespace(sb, 0, true);
         for (nameEnd = nameStart; nameEnd < length; nameEnd ++) {
             char ch = sb.charAt(nameEnd);
             if (ch == ':' || Character.isWhitespace(ch)) {
@@ -716,36 +721,70 @@ public abstract class HttpMessageDecoder extends ReplayingDecoder<State> {
             }
         }
 
+        String name = sb.substring(nameStart, nameEnd);
+        // Defense in depth: validate the parsed name characters too. In the
+        // current parser shape this catches programmatic mis-use; the wire
+        // smuggling cases are caught by the OWS checks above and below.
+        HttpCodecUtil.validateHeaderName(name);
+
+        // CVE-2021-43797: the only chars allowed between the header name and
+        // the colon are OWS (SP/HTAB). Anything else — in particular 0x1c-0x1f,
+        // which Character.isWhitespace treats as whitespace and the old parser
+        // silently skipped — is a request-smuggling vector and must be rejected.
         for (colonEnd = nameEnd; colonEnd < length; colonEnd ++) {
-            if (sb.charAt(colonEnd) == ':') {
+            char ch = sb.charAt(colonEnd);
+            if (ch == ':') {
                 colonEnd ++;
                 break;
             }
+            if (!isOWS(ch)) {
+                throw new IllegalArgumentException(
+                        "Invalid character in header name terminator," +
+                                " only a single space or horizontal tab allowed," +
+                                " but received a '" + ch + "' (0x" + Integer.toHexString(ch) + ")");
+            }
         }
 
-        valueStart = findNonWhitespace(sb, colonEnd);
+        // CVE-2021-43797: enforce strict OWS (SP or HTAB) between the colon and
+        // the value, mirroring the 4.1.71 fix. Anything else (including Java's
+        // broader Character.isWhitespace set) is rejected.
+        valueStart = findNonWhitespace(sb, colonEnd, true);
         if (valueStart == length) {
             return new String[] {
-                    sb.substring(nameStart, nameEnd),
+                    name,
                     ""
             };
         }
 
         valueEnd = findEndOfString(sb);
         return new String[] {
-                sb.substring(nameStart, nameEnd),
+                name,
                 sb.substring(valueStart, valueEnd)
         };
     }
 
-    private static int findNonWhitespace(String sb, int offset) {
+    private static boolean isOWS(char c) {
+        // RFC 7230 §3.2.3: OWS is SP (0x20) or HTAB (0x09) only.
+        return c == ' ' || c == '\t';
+    }
+
+    private static int findNonWhitespace(String sb, int offset, boolean validateOWS) {
         int result;
         for (result = offset; result < sb.length(); result ++) {
-            if (!Character.isWhitespace(sb.charAt(result))) {
+            char c = sb.charAt(result);
+            if (!Character.isWhitespace(c)) {
                 break;
+            } else if (validateOWS && !isOWS(c)) {
+                throw new IllegalArgumentException(
+                        "Invalid separator, only a single space or horizontal tab allowed," +
+                                " but received a '" + c + "' (0x" + Integer.toHexString(c) + ")");
             }
         }
         return result;
+    }
+
+    private static int findNonWhitespace(String sb, int offset) {
+        return findNonWhitespace(sb, offset, false);
     }
 
     private static int findWhitespace(String sb, int offset) {

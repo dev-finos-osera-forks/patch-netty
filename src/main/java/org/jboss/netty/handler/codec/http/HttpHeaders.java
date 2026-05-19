@@ -1035,11 +1035,12 @@ public abstract class HttpHeaders implements Iterable<Map.Entry<String, String>>
 
         //Check for prohibited characters.
         switch (c) {
+            case 0x00: case 0x1c: case 0x1d: case 0x1e: case 0x1f:
             case '\t': case '\n': case 0x0b: case '\f': case '\r':
             case ' ':  case ',':  case ':':  case ';':  case '=':
                 throw new IllegalArgumentException(
                         "Header name cannot contain the following prohibited characters: " +
-                                "=,;: \\t\\r\\n\\v\\f ");
+                                "=,;: \\t\\r\\n\\v\\f \\0 0x1c 0x1d 0x1e 0x1f");
         }
     }
 
