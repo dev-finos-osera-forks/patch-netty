@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Control Plane Limited. All rights reserved.
+# Built by ControlPlane for the FINOS OSERA Exchange.
+# SPDX-License-Identifier: Apache-2.0
+# The file a patch repository carries, .github/workflows/osera-fitness.yaml, on the patch branch.
+# On push of a release tag it calls the OSERA fitness check library. Nothing else to configure.
+name: OSERA fitness checks
+run-name: OSERA fitness checks on ${{ github.ref_name }}
+
+on:
+  push:
+    tags: # the two release tag forms of OSERA-SP-0.1.0: the Java CARE style form (REL-003-JAVA) and the generic form (the + must be escaped)
+      - 'v*-osera-*'
+      - 'v*\+osera-patch.*'
+      - 'v*\+backpatch.*' # DEV ONLY: Moderne's existing release tags
+
+permissions:
+  contents: read # for checking out the repository.
+  id-token: write # for creating OIDC tokens for signing.
+  attestations: write # for GitHub Attestations.
+
+jobs:
+  fitness:
+    uses: dev-finos-osera-forks/fitness-checks/.github/workflows/fitness.yaml@v1
+    with:
+      tag: ${{ github.ref_name }}
